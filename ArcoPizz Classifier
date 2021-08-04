@@ -1,0 +1,188 @@
+### IMPORT IOWA MUSICAL INSTRUMENTS DATASET
+###########################################################################################
+
+!rm -r data_zip
+!rm -r data
+!mkdir data_zip
+!mkdir data
+import urllib.request
+url = 'http://theremin.music.uiowa.edu/sound%20files/MIS%20Pitches%20-%202014/Strings/'
+instruments = ['Violin','Viola','Cello']
+attacks = ['arco','pizz']
+strings = {'Violin':['E','A','D','G'], 'Viola':['A','D','G','C'], 'Cello':['A','D','G','C']}
+
+for instrument in instruments:
+  print('Downloading ', instrument, ' files')
+  for attack in attacks:
+    for string in strings[instrument]:
+      filename = instrument+'.'+attack+'.ff.sul'+string+'.stereo.zip'
+      fullpath = url+instrument+'/'+filename
+      response = urllib.request.urlretrieve(fullpath,'data_zip/'+filename)
+
+!for file in data_zip/*.zip; do unzip "$file" -d data; done
+!for file in data/*.aif; do ffmpeg -i "$file" "$file".wav; done
+!rm data/*.aif 
+!rm -r data/__MACOSX
+
+import glob
+import librosa    
+x_arco = []
+for filename in glob.glob('data/*arco*.wav'):
+  data, fs = librosa.load(filename, sr=16000)  
+  x_arco.append(data)
+
+x_pizz = []
+for filename in glob.glob('data/*pizz*.wav'):
+  data, fs = librosa.load(filename, sr=16000)
+  x_pizz.append(data)
+
+import numpy as np
+x = x_arco + x_pizz
+max_len = 16000
+for idata, data in enumerate(x):
+  x[idata] = np.ndarray.tolist(data[:max_len]) + [0]*(max_len - len(data))
+
+X = np.array(x)
+y = np.array([0]*len(x_arco) + [1]*len(x_pizz))
+
+print('The shape of X is: ', X.shape)
+print('The shape of y is: ', y.shape)
+
+
+
+###########################################################################################
+# IOWA musical instruments dataset
+# Preview audio below
+###########################################################################################
+
+# reminder: data is organized in the following order: violin, viola, cello; 4 different notes each; arco, pizz (total 577 datapoints)
+
+
+import IPython.display as ipd
+row = int(input())
+display(ipd.Audio(X[row], rate=16000))
+
+
+###########################################################################################
+# Extract features from raw data
+###########################################################################################
+#X is raw data, X_ft will contain the features
+#y is labels, stays the same
+
+import librosa
+
+feat1 = np.array([np.mean(librosa.feature.spectral_centroid(x)) for x in X]) #spectral centroid - average across all 16000 samples for each example
+feat2 = np.array([np.mean(librosa.feature.rms(x)) for x in X]) #RMS - averaged for each example
+feat3 = np.array([np.mean(librosa.feature.zero_crossing_rate(x)) for x in X]) #ZCR - averaged for each example
+X_ft = np.vstack((feat1,feat2,feat3)).T #stack and transpose feature vectors, should have as many columns as features, rows should be 577
+
+print("The shape of X(the original raw data in samples) is: ", X.shape)
+print("The shape of feature 1 (avg spectral centroid) is: ", feat1.shape)
+print("The shape of feature 2 (avg RMS energy) is: ", feat2.shape)
+print("The shape of feature 3 (avg Zero Crossing Rate) is: ", feat3.shape)
+print("The shape of X_ft is: ", X_ft.shape)
+print(X_ft)
+
+
+
+###########################################################################################
+# k-cross validation (separating dataset into training and eval sets)
+###########################################################################################
+
+
+#how many datapoints do we have?
+Ntotal = X.shape[0]
+Ntest = int(Ntotal*0.1) #10% is a good rule of thumb to reserve for final test data
+Ntrain = Ntotal - Ntest
+
+# we can use np.random.choice to randomize the indices of all the data
+np.random.seed(0)
+shuff_idx = np.random.choice(Ntotal, Ntotal, replace=False)
+
+# Let's separate the testing data
+X_ts = X[shuff_idx[:Ntest]]
+y_ts = y[shuff_idx[:Ntest]]
+
+# Now separate the training data
+
+X_train = X[shuff_idx[Ntest:]]
+y_train = y[shuff_idx[Ntest:]]
+
+print('the number of testing datapoints is: ', Ntest)
+print('the number of training datapoints is: ', Ntrain)
+
+# We still have to split this into folds
+number_of_folds = 5 #set the number of folds
+Nfold = int(Ntrain/number_of_folds)
+X_folds = []
+y_folds = []
+
+for ifold in range(number_of_folds):
+  X_folds.append(X_train[ifold*Nfold:ifold*Nfold+Nfold])
+  y_folds.append(y_train[ifold*Nfold:ifold*Nfold+Nfold])
+
+print('The shape of X_ts is: ', X_ts.shape)
+print('The shape of y_ts is: ', y_ts.shape)
+[print("The shape of data   in fold No. ",i,"is: ", x.shape) for i, x in enumerate(X_folds)]
+[print("The shape of labels in fold No. ",i,"is: ", y.shape) for i, y in enumerate(y_folds)]
+"this is the last line"
+
+
+###########################################################################################
+#Train binary classifier
+###########################################################################################
+
+import numpy as np
+# variables we will need
+
+D = X_folds[0].shape[1]
+lr = 0.005 #learning rate (.005 is a good starting point)
+v = .0001*np.random.randn(D) #<- the parameters that we want to train
+epochs = 100
+
+# regression function 
+def sigmoid(theta):
+  return np.exp(theta)/(1+np.exp(theta))
+
+for ifold in range(number_of_folds):
+  print("the current validation fold is: ", ifold)
+  for epoch in range(epochs):
+    
+    X_vl = X_folds[ifold]
+    y_vl = y_folds[ifold]
+
+    X_tr = np.vstack([X_folds[i] for i in range(number_of_folds) if i != ifold])
+    y_tr = np.hstack([y_folds[i] for i in range(number_of_folds) if i != ifold])
+  
+    #Get the number of training and validation datapoints
+    N_tr = X_tr.shape[0]
+    N_vl = X_vl.shape[0]
+
+    # let's find y_hat_tr
+    y_hat_tr = sigmoid(np.dot(X_tr,v))
+
+    # let's find y_hat_vl
+    y_hat_vl = sigmoid(np.dot(X_vl,v))
+
+    # now calculate the loss for the training data
+    J_tr = -(1/N_tr)*np.sum((y_tr*np.log(y_hat_tr)+(1-y_tr)*np.log(1-y_hat_tr)))
+    J_vl = -(1/N_vl)*np.sum((y_vl*np.log(y_hat_vl)+(1-y_vl)*np.log(1-y_hat_vl)))
+
+    #now we need to update v with the gradients to optimize
+    dJdyhat = y_hat_tr - y_tr
+    dJdv = (1/N_tr)*np.dot(dJdyhat.T,X_tr)
+
+    v -= lr*dJdv
+
+    print("J_tr is: ",J_tr)
+    print("J_vl is: ",J_vl)
+
+  
+
+#this is the regression
+y_hat = sigmoid(np.dot(X,v))
+
+# now calculate the loss
+J = -(1/N_tr)*np.sum((y*np.log(y_hat)+(1-y)*np.log(1-y_hat)))
+
+
